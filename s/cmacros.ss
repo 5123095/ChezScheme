@@ -328,7 +328,7 @@
                  [(_ foo e1 e2) e1] ...
                  [(_ bar e1 e2) e2]))))])))
 
-(define-constant scheme-version #x00090503)
+(define-constant scheme-version #x00090505)
 
 (define-syntax define-machine-types
   (lambda (x)
@@ -434,7 +434,7 @@
 (define-constant fasl-type-gensym 19)
 (define-constant fasl-type-exactnum 20)
 ; 21
-(define-constant fasl-type-fasl-size 22)
+; 22
 (define-constant fasl-type-record 23)
 (define-constant fasl-type-rtd 24)
 (define-constant fasl-type-small-integer 25)
@@ -445,15 +445,20 @@
 (define-constant fasl-type-weak-pair 30)
 (define-constant fasl-type-eq-hashtable 31)
 (define-constant fasl-type-symbol-hashtable 32)
-(define-constant fasl-type-group 33)
+; 33
 (define-constant fasl-type-visit 34)
 (define-constant fasl-type-revisit 35)
+(define-constant fasl-type-visit-revisit 36)
 
-(define-constant fasl-type-immutable-vector 36)
-(define-constant fasl-type-immutable-string 37)
-(define-constant fasl-type-immutable-fxvector 38)
-(define-constant fasl-type-immutable-bytevector 39)
-(define-constant fasl-type-immutable-box 40)
+(define-constant fasl-type-immutable-vector 37)
+(define-constant fasl-type-immutable-string 38)
+(define-constant fasl-type-immutable-fxvector 39)
+(define-constant fasl-type-immutable-bytevector 40)
+(define-constant fasl-type-immutable-box 41)
+
+(define-constant fasl-type-uncompressed 42)
+(define-constant fasl-type-gzip 43)
+(define-constant fasl-type-lz4 44)
 
 (define-constant fasl-fld-ptr 0)
 (define-constant fasl-fld-u8 1)
@@ -531,6 +536,16 @@
 
 (define-constant SEOF -1)
 
+(define-constant COMPRESS-GZIP 0)
+(define-constant COMPRESS-LZ4 1)
+(define-constant COMPRESS-FORMAT-BITS 3)
+
+(define-constant COMPRESS-MIN 0)
+(define-constant COMPRESS-LOW 1)
+(define-constant COMPRESS-MEDIUM 2)
+(define-constant COMPRESS-HIGH 3)
+(define-constant COMPRESS-MAX 4)
+
 (define-constant SICONV-DUNNO 0)
 (define-constant SICONV-INVALID 1)
 (define-constant SICONV-INCOMPLETE 2)
@@ -585,10 +600,6 @@
 (define-constant ERROR_NONCONTINUABLE_INTERRUPT 6)
 (define-constant ERROR_VALUES 7)
 (define-constant ERROR_MVLET 8)
-
-;;; object-file tags
-(define-constant visit-tag 0)
-(define-constant revisit-tag 1)
 
 ;;; allocation spaces
 (define-constant space-locked #x20)         ; lock flag
@@ -751,6 +762,7 @@
 (define-constant code-flag-system         #b0001)
 (define-constant code-flag-continuation   #b0010)
 (define-constant code-flag-template       #b0100)
+(define-constant code-flag-guardian       #b1000)
 
 (define-constant fixnum-bits
   (case (constant ptr-bits)
@@ -837,6 +849,10 @@
   (fxlogor (constant type-code)
            (fxsll (constant code-flag-continuation)
                   (constant code-flags-offset))))
+(define-constant type-guardian-code
+  (fxlogor (constant type-code)
+           (fxsll (constant code-flag-guardian)
+                  (constant code-flags-offset))))
 
 ;; type checks are generally performed by applying the mask to the object
 ;; then comparing against the type code.  a mask equal to
@@ -911,6 +927,9 @@
            (fx- (fxsll 1 (constant code-flags-offset)) 1)))
 (define-constant mask-continuation-code
   (fxlogor (fxsll (constant code-flag-continuation) (constant code-flags-offset))
+           (fx- (fxsll 1 (constant code-flags-offset)) 1)))
+(define-constant mask-guardian-code
+  (fxlogor (fxsll (constant code-flag-guardian) (constant code-flags-offset))
            (fx- (fxsll 1 (constant code-flags-offset)) 1)))
 (define-constant mask-thread       (constant byte-constant-mask))
 (define-constant mask-tlc          (constant byte-constant-mask))
@@ -1346,6 +1365,7 @@
    [ptr timer-ticks]
    [ptr disable-count]
    [ptr signal-interrupt-pending]
+   [ptr signal-interrupt-queue]
    [ptr keyboard-interrupt-pending]
    [ptr threadno]
    [ptr current-input]
@@ -1371,9 +1391,14 @@
    [ptr suppress-primitive-inlining]
    [ptr default-record-equal-procedure]
    [ptr default-record-hash-procedure]
+   [ptr compress-format]
+   [ptr compress-level]
+   [void* lz4-out-buffer]
    [U64 instr-counter]
    [U64 alloc-counter]
-   [ptr parameters]))
+   [ptr parameters]
+   [ptr DSTBV]
+   [ptr SRCBV]))
 
 (define tc-field-list
   (let f ([ls (oblist)] [params '()])
@@ -1480,8 +1505,9 @@
     (with-syntax ([type (datum->syntax #'* (filter-scheme-type 'string-char))])
       #''type)))
 
-(define-constant annotation-debug 1)
-(define-constant annotation-profile 2)
+(define-constant annotation-debug   #b0001)
+(define-constant annotation-profile #b0010)
+(define-constant annotation-all     #b0011)
 
 (eval-when (compile load eval)
 (define flag->mask

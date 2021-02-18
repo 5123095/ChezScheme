@@ -727,6 +727,11 @@
            (eqv? (read-char x) #\a)
            (char-ready? x)
            (eof-object? (read-char x))))
+   (parameterize ([current-input-port (open-input-string "a")])
+      (and (char-ready?)
+           (eqv? (read-char) #\a)
+           (char-ready?)
+           (eof-object? (read-char))))
  )
 
 (mat clear-input-port ; test interactively
@@ -882,6 +887,26 @@
  )
 
 (mat fasl
+  (error?
+    (separate-eval '(let ([op (open-file-output-port "testfile.ss" (file-options compressed replace))])
+                      (fasl-write 3 op))))
+  (error?
+    (separate-eval '(let ([ip (open-file-input-port "testfile.ss" (file-options compressed))])
+                      (fasl-read ip))))
+  (equal?
+    (separate-eval '(with-exception-handler
+                      (lambda (c) (unless (warning? c) (raise-continuable c)))
+                      (lambda ()
+                        (let ([op (open-file-output-port "testfile.ss" (file-options compressed replace))])
+                          (fasl-write 3 op)))))
+    "")
+  (equal?
+    (separate-eval `(with-exception-handler
+                      (lambda (c) (unless (warning? c) (raise-continuable c)))
+                      (lambda ()
+                        (let ([ip (open-file-input-port "testfile.ss" (file-options compressed))])
+                          (fasl-read ip)))))
+    "3\n")
   (pretty-equal?
     (begin
       (call-with-port
@@ -921,10 +946,10 @@
           (open-file-input-port "testfile.ss")
           (get-stuff fasl-read))
         (call-with-port
-          (open-file-input-port "testfile.ss" (file-options compressed))
+          (open-file-input-port "testfile.ss" (file-options #;compressed))
           (get-stuff fasl-read))
         (call-with-port
-          (open-file-input-port "testfile.ss" (file-options compressed))
+          (open-file-input-port "testfile.ss" (file-options #;compressed))
           (get-stuff (lambda (p)
                        (when (eof-object? (lookahead-u8 p)) (printf "done\n"))
                        (fasl-read p))))
@@ -1614,25 +1639,24 @@
     #t)
   (error?
     (let* ([ip (open-file-input-port "testfile.ss")]
-           [sfd (#%$source-file-descriptor "testfile.ss" ip)]
+           [sfd (make-source-file-descriptor "testfile.ss" ip #t)]
            [ip (transcoded-port ip (native-transcoder))])
       (dynamic-wind
         void
-        (lambda () (read-token ip sfd))
+        (lambda () (read-token ip sfd 0))
         (lambda () (close-input-port ip)))))
   (let ()
     (with-output-to-file "testfile.ss"
       (lambda () (display "\neat\n"))
       'replace)
     #t)
-  ; $transcoded-source-port is no more
-  #;(equal?
+  (equal?
     (let-values ([vals (let* ([ip (open-file-input-port "testfile.ss")]
-                              [sfd (#%$source-file-descriptor "testfile.ss" ip)]
-                              [ip (#%$transcoded-source-port ip (native-transcoder))])
+                              [sfd (make-source-file-descriptor "testfile.ss" ip #t)]
+                              [ip (transcoded-port ip (native-transcoder))])
                          (dynamic-wind
                            void
-                           (lambda () (read-token ip sfd))
+                           (lambda () (read-token ip sfd 0))
                            (lambda () (close-input-port ip))))])
       vals)
     '(atomic eat 1 4))

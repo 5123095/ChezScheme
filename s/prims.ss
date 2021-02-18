@@ -1,4 +1,3 @@
-"prims.ss"
 ;;; prims.ss
 ;;; Copyright 1984-2017 Cisco Systems, Inc.
 ;;; 
@@ -19,6 +18,7 @@
    (run-cp0 (default-run-cp0))
    (generate-interrupt-trap #f))
 
+(begin
 ;;; hand-coded primitives
 
 (define-who $hand-coded
@@ -87,6 +87,11 @@
   (foreign-procedure "(cs)s_oblist"
     ()
     scheme-object))
+
+(define $dequeue-scheme-signals
+  (foreign-procedure "(cs)dequeue_scheme_signals"
+    (ptr)
+    ptr))
 
 (define-who $show-allocation
   (let ([fp (foreign-procedure "(cs)s_showalloc" (boolean string) void)])
@@ -1417,6 +1422,28 @@
     ; tconc is assumed to be valid at all call sites
     (#3%$install-ftype-guardian obj tconc)))
 
+(define guardian?
+  (lambda (g)
+    (#3%guardian? g)))
+
+(define-who unregister-guardian
+  (let ([fp (foreign-procedure "(cs)unregister_guardian" (scheme-object) scheme-object)])
+    (define probable-tconc? ; full tconc? could be expensive ...
+      (lambda (x)
+        (and (pair? x) (pair? (car x)) (pair? (cdr x)))))
+    (lambda (g)
+      (unless (guardian? g) ($oops who "~s is not a guardian" g))
+      ; at present, guardians should have either one free variable (the tcond) or two(the tconc and an ftd)
+      ; but we just look for a probable tconc among whatever free variables it has
+      (fp (let ([n ($code-free-count ($closure-code g))])
+            (let loop ([i 0])
+              (if (fx= i n)
+                  ($oops #f "failed to find a tconc among the free variables of guardian ~s" g)
+                  (let ([x ($closure-ref g i)])
+                    (if (probable-tconc? x)
+                        x
+                        (loop (fx+ i 1)))))))))))
+
 (define-who $ftype-guardian-oops
   (lambda (ftd obj)
     ($oops 'ftype-guardian "~s is not an ftype pointer of the expected type ~s" obj ftd)))
@@ -1693,9 +1720,9 @@
   (define-tc-parameter $sfd (lambda (x) (or (eq? x #f) (source-file-descriptor? x))) "a source-file descriptor or #f" #f)
   (define-tc-parameter $current-mso (lambda (x) (or (eq? x #f) (procedure? x))) "a procedure or #f" #f)
   (define-tc-parameter $target-machine symbol? "a symbol")
-  (define-tc-parameter optimize-level (lambda (x) (and (fixnum? x) (fx<= 0 x 3))) "valid optimize level" 0)
-  (define-tc-parameter $compile-profile (lambda (x) (memq x '(#f source block))) "valid compile-profile flag" #f)
-  (define-tc-parameter subset-mode (lambda (mode) (memq mode '(#f system))) "valid subset mode" #f)
+  (define-tc-parameter optimize-level (lambda (x) (and (fixnum? x) (fx<= 0 x 3))) "a valid optimize level" 0)
+  (define-tc-parameter $compile-profile (lambda (x) (memq x '(#f source block))) "a valid compile-profile flag" #f)
+  (define-tc-parameter subset-mode (lambda (mode) (memq mode '(#f system))) "a valid subset mode" #f)
   (define-tc-parameter default-record-equal-procedure (lambda (x) (or (eq? x #f) (procedure? x))) "a procedure or #f" #f)
   (define-tc-parameter default-record-hash-procedure (lambda (x) (or (eq? x #f) (procedure? x))) "a procedure or #f" #f)
 )
@@ -2246,6 +2273,7 @@
     (type-check who fixnum x)
     (#3%$read-performance-monitoring-counter x)))
 
+; TODO for arm32 targets, a kernel module is required to read the time stamp counter
 (define $read-time-stamp-counter
   (lambda ()
     (#3%$read-time-stamp-counter)))
@@ -2287,4 +2315,5 @@
       (let ([cp (cp->unsigned who cp)])
         (unless (string? str) ($oops who "~s is not a string" str))
         (wctmb cp (string->utf16 str 'little))))))
+)
 )

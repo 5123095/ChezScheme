@@ -2831,6 +2831,39 @@
 )
 
 (mat record-writer
+  (equal?
+    (with-output-to-string
+      (lambda ()
+        (define-record-type sp (fields lat))
+        (record-writer (type-descriptor sp)
+          (lambda (x p w) (w (sp-lat x) p)))
+        (pretty-print (list (make-sp 'ugh)))))
+    "(ugh)\n")
+  (error? ; 'sp is not an rtd
+    (with-output-to-string
+      (lambda ()
+        (define-record-type sp (fields lat))
+        (record-writer 'sp
+          (lambda (x p w) (w (sp-lat x) p))))))
+  (error? ; "oops" is not a procedure
+    (with-output-to-string
+      (lambda ()
+        (define-record-type sp (fields lat))
+        (record-writer (type-descriptor sp) "oops"))))
+  (error? ; ugh is not a textual output port
+    (with-output-to-string
+      (lambda ()
+        (define-record-type sp (fields lat))
+        (record-writer (type-descriptor sp)
+          (lambda (x p w) (w p (sp-lat x))))
+        (pretty-print (list (make-sp 'ugh))))))
+  (error? ; procedure not a textual output port
+    (with-output-to-string
+      (lambda ()
+        (define-record-type sp (fields lat))
+        (record-writer (type-descriptor sp)
+          (lambda (x p w) (w (sp-lat x) w)))
+        (pretty-print (list (make-sp 'ugh))))))
   (begin
     (define-record $froz (a b) ([c (+ a b)]))
     (define-record $fruz $froz (d))
@@ -8331,7 +8364,7 @@
       (record? (make-xftr) (record-type-descriptor prnt)))
     #f)
   (equivalent-expansion?
-    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f])
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f] [compile-profile #f])
       (expand/optimize
         '(lambda (x)
            (define-record-type bar)
@@ -8340,7 +8373,7 @@
        (#3%record? x (#2%$make-record-type-descriptor #!base-rtd 'bar #f #f #f #f '#() 'define-record-type))))
 
   (equivalent-expansion?
-    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f])
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f] [compile-profile #f])
       (expand/optimize
         '(lambda (x)
            (define-record-type bar (sealed #t))
@@ -8782,7 +8815,7 @@
     '(lambda (a) (#3%list (#3%cons a a) a)))
   ; oscar's example
   (equivalent-expansion?
-    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f])
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [#%$suppress-primitive-inlining #f] [compile-profile #f])
       (expand/optimize
         '(let ()
            (import scheme)
@@ -8795,7 +8828,7 @@
                r)))))
     `(lambda (x) (#3%$record ',record-type-descriptor? 37 (#2%+ 1 (#2%+ 1 x)))))
   (equivalent-expansion?
-    (parameterize ([optimize-level 3] [enable-cp0 #t] [#%$suppress-primitive-inlining #f])
+    (parameterize ([optimize-level 3] [enable-cp0 #t] [#%$suppress-primitive-inlining #f] [compile-profile #f])
       (expand/optimize
         '(let ()
            (import scheme)
@@ -9051,3 +9084,137 @@
            (#2%list #t #t)
            (#2%list #f (#2%record-type-sealed? rtd))))))
  )
+
+(define (cp0x3 cp0 x)
+  (cp0 (cp0 (cp0 x))))
+
+(define (member? o l)
+  (and (member o l) #t))
+ 
+(mat cp0-kar-kons-optimizations
+  ; for now, it's necesary to run cp0 three times to complete the reduction
+  (equal?
+    (with-output-to-string
+      (lambda ()
+        (define-record mybox (val))
+        (display (mybox-val (begin (display 1) (make-mybox 2))))))
+    "12")
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+           (define-record mybox (val))
+           (display (mybox-val (begin (display 1) (make-mybox 2)))))))
+    '(#2%display
+      (begin
+        (#2%display 1)
+        2)))
+  (eq? (let ()
+         (define-record kons (kar kdr))
+         (kons-kar (make-kons 'a 'b)))
+       'a)
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+           (define-record kons (kar kdr))
+           (kons-kar (make-kons 'a 'b)))))
+    ''a)
+  (eq? (let ()
+         (define-record kons (kar kdr))
+         (kons-kdr (make-kons 'a 'b)))
+       'b)
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+           (define-record kons (kar kdr))
+           (kons-kdr (make-kons 'a 'b)))))
+    ''b)
+  (member?
+    (with-output-to-string
+      (lambda ()
+        (define-record kons (kar kdr))
+        (display (kons-kar (make-kons (begin (display 1) (display 2) 3)
+                                      (begin (display 4) (display 5) 6))))))
+    '("45123" "12453"))
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+          (define-record kons (kar kdr))
+          (display (kons-kar (make-kons (begin (display 1) (display 2) 3)
+                                        (begin (display 4) (display 5) 6)))))))
+    '(#2%display
+      (begin
+        (#2%display 4)
+        (#2%display 5)
+        (#2%display 1)
+        (#2%display 2)
+        3)))
+  (member?
+    (with-output-to-string
+      (lambda ()
+        (define-record kons (kar kdr))
+        (display (kons-kdr (make-kons (begin (display 1) (display 2) 3)
+                                      (begin (display 4) (display 5) 6))))))
+    '("45126" "12456"))
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+          (define-record kons (kar kdr))
+          (display (kons-kdr (make-kons (begin (display 1) (display 2) 3)
+                                        (begin (display 4) (display 5) 6)))))))
+    '(#2%display
+      (begin
+        (#2%display 4)
+        (#2%display 5)
+        (#2%display 1)
+        (#2%display 2)
+        6)))
+  (equal?
+    (with-output-to-string
+      (lambda ()
+        (define-record ktail (kar (immutable kdr)))
+        (define x (make-ktail 1 2))
+        (display 3)
+        (display (ktail-kdr (begin (display 4) x)))))
+    "342")
+  (equivalent-expansion?
+    (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+      (expand/optimize
+        '(let ()
+          (define-record ktail (kar (immutable kdr)))
+          (define x (make-ktail 1 2))
+          (display 3)
+          (display (ktail-kdr (begin (display 4) x))))))
+    '(begin
+       (#2%display 3)
+       (#2%display
+        (begin
+          (#2%display 4)
+          2))))
+  (equal?
+    (with-output-to-string
+      (lambda ()
+        (define-record ktail (kar (immutable kdr)))
+        (define x (make-ktail 1 2))
+        (display 3)
+        (display (ktail-kar (begin (display 4) x)))))
+    "341")
+  (not (equivalent-expansion?
+         (parameterize ([optimize-level 2] [enable-cp0 #t] [run-cp0 cp0x3] [#%$suppress-primitive-inlining #f])
+           (expand/optimize
+             '(let ()
+               (define-record ktail (kar (immutable kdr)))
+               (define x (make-ktail 1 2))
+               (display 3)
+               (display (ktail-kar (begin (display 4) x))))))
+         '(begin
+            (#2%display 3)
+            (#2%display
+             (begin
+               (#2%display 4)
+               1)))))
+)

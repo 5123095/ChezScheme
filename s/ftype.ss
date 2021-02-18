@@ -1,4 +1,3 @@
-"ftype.ss"
 ;;; Copyright 1984-2017 Cisco Systems, Inc.
 ;;; 
 ;;; Licensed under the Apache License, Version 2.0 (the "License");
@@ -228,6 +227,7 @@ ftype operators:
    appropriate size for int and unsigned.
 |#
 
+(begin
 (let ()
   (include "types.ss")
   (define-syntax rtd/fptr
@@ -957,6 +957,12 @@ ftype operators:
       (or (ftd-struct? x)
           (ftd-union? x)
           (ftd-array? x))))
+  (set! $ftd-unsigned?
+    (lambda (x)
+      (and (ftd-base? x)
+           (case (ftd-base-type x)
+             [(unsigned-8 unsigned-16 unsigned-32 unsigned-64) #t]
+             [else #f]))))
   (set! $ftd->members
     (lambda (x)
       ;; Currently used for x86_64 and arm32 ABI: Returns a list of
@@ -2051,3 +2057,4 @@ ftype operators:
 (define-syntax ftype-spin-lock! (lambda (x) ($trans-ftype-locked-op! #'ftype-spin-lock! x #'$fptr-spin-lock!)))
 (define-syntax ftype-unlock! (lambda (x) ($trans-ftype-locked-op! #'ftype-unlock! x #'$fptr-unlock!)))
 (define-syntax ftype-set! (lambda (x) ($trans-ftype-set! x)))
+)

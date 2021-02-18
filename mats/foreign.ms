@@ -2536,8 +2536,32 @@
      (define handler (foreign-callable work (long) void))
      (lock-object handler)
      (call_many_times (foreign-callable-entry-point handler))
+     (unlock-object handler)
      v)
    14995143)
+
+  (equal?
+   (let ()
+     (define v 0)
+     (define call_many_times_bv (foreign-procedure "call_many_times_bv" (void*) void))
+     (define work
+       (lambda (bv)
+         (set! v (+ v (bytevector-u8-ref bv 0)))
+         ;; Varying work, as above:
+         (let loop ([n (bitwise-and (bytevector-u8-ref bv 1) #xFFFF)])
+           (unless (zero? n)
+             (set! v (add1 v))
+             (loop (bitwise-arithmetic-shift-right n 1))))))
+     (define handlers (list (foreign-callable work (u8*) void)
+                            (foreign-callable work (u16*) void)
+                            (foreign-callable work (u32*) void)))
+     (map lock-object handlers)
+     (for-each (lambda (handler)
+                 (call_many_times_bv (foreign-callable-entry-point handler)))
+               handlers)
+     (map unlock-object handlers)
+     v)
+   103500000)
 
   ;; regression test related to saving registers that hold allocated
   ;; callable argument
@@ -2662,63 +2686,64 @@
               (eqv? pid^ pid)))))))
 )
 
-(mat varargs
-  (begin
-    (define load-libc
-      (machine-case
-        [(i3ob ti3ob a6ob ta6ob a6s2 ta6s2 i3s2 ti3s2 i3qnx ti3qnx i3nb ti3nb a6nb ta6nb)
-         '(load-shared-object "libc.so")]
-        [(i3le ti3le a6le ta6le arm32le tarm32le ppc32le tppc32le)
-         '(load-shared-object "libc.so.6")]
-        [(i3fb ti3fb a6fb ta6fb)
-         '(load-shared-object "libc.so.7")]
-        [(i3nt ti3nt a6nt ta6nt)
-         '(load-shared-object "msvcrt.dll")]
-        [(i3osx ti3osx a6osx ta6osx)
-         '(load-shared-object "libc.dylib")]
-        [else (error 'load-libc "unrecognized machine type ~s" (machine-type))]))
-    #t)
-  (equal?
-    (with-input-from-string
-      (separate-eval
-        `(begin
-           ,load-libc
-           (define f (foreign-procedure "printf" (string double) int))
-           (f "(%g)" 3.5)
-           (void)))
-      read)
-    '(3.5))
-  (equal?
-    (with-input-from-string
-      (separate-eval
-        `(begin
-           ,load-libc
-           (define f (foreign-procedure "printf" (string double double double double double double) int))
-           (f "(%g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5)
-           (void)))
-      read)
-    '(3.5 2.5 -1.5 6.75 8.25 -9.5))
-  (equal?
-    (with-input-from-string
-      (separate-eval
-        `(begin
-           ,load-libc
-           (define f (foreign-procedure "printf" (string double double double double double double double double) int))
-           (f "(%g %g %g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5)
-           (void)))
-      read)
-    '(3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5))
-  (equal?
-    (with-input-from-string
-      (separate-eval
-        `(begin
-           ,load-libc
-           (define f (foreign-procedure "printf" (string double double double double double double double double double double) int))
-           (f "(%g %g %g %g %g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5 7.25 -0.5)
-           (void)))
-      read)
-    '(3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5 7.25 -0.5))
-)
+;; varargs ABI not supported for arm32le (yet)
+(unless (memq (machine-type) '(arm32le tarm32le))
+  (mat varargs
+    (begin
+      (define load-libc
+        (machine-case
+          [(i3ob ti3ob a6ob ta6ob a6s2 ta6s2 i3s2 ti3s2 i3qnx ti3qnx i3nb ti3nb a6nb ta6nb)
+           '(load-shared-object "libc.so")]
+          [(i3le ti3le a6le ta6le arm32le tarm32le ppc32le tppc32le)
+           '(load-shared-object "libc.so.6")]
+          [(i3fb ti3fb a6fb ta6fb)
+           '(load-shared-object "libc.so.7")]
+          [(i3nt ti3nt a6nt ta6nt)
+           '(load-shared-object "msvcrt.dll")]
+          [(i3osx ti3osx a6osx ta6osx)
+           '(load-shared-object "libc.dylib")]
+          [else (error 'load-libc "unrecognized machine type ~s" (machine-type))]))
+      #t)
+    (equal?
+      (with-input-from-string
+        (separate-eval
+          `(begin
+             ,load-libc
+             (define f (foreign-procedure "printf" (string double) int))
+             (f "(%g)" 3.5)
+             (void)))
+        read)
+      '(3.5))
+    (equal?
+      (with-input-from-string
+        (separate-eval
+          `(begin
+             ,load-libc
+             (define f (foreign-procedure "printf" (string double double double double double double) int))
+             (f "(%g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5)
+             (void)))
+        read)
+      '(3.5 2.5 -1.5 6.75 8.25 -9.5))
+    (equal?
+      (with-input-from-string
+        (separate-eval
+          `(begin
+             ,load-libc
+             (define f (foreign-procedure "printf" (string double double double double double double double double) int))
+             (f "(%g %g %g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5)
+             (void)))
+        read)
+      '(3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5))
+    (equal?
+      (with-input-from-string
+        (separate-eval
+          `(begin
+             ,load-libc
+             (define f (foreign-procedure "printf" (string double double double double double double double double double double) int))
+             (f "(%g %g %g %g %g %g %g %g %g %g)" 3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5 7.25 -0.5)
+             (void)))
+        read)
+      '(3.5 2.5 -1.5 6.75 8.25 -9.5 1e32 -4.5 7.25 -0.5))))
 
 (mat structs
   (begin
@@ -2969,6 +2994,51 @@
   (check-union [x i64 43] [y int 0])
   (check-union [x float 58.0] [y int 0])
   (check-union [x double 68.0] [y int 0])
+
+  ;; Check that `__collect_safe` saves argument and result floating-point registers
+  ;; while activating and deactivating a thread
+  (let ()
+    (define-ftype T (struct [d double] [i integer-8] [n int]))
+    (define sum_pre_double_double_double_double_double_double_double_double
+      (foreign-procedure __collect_safe
+                         "f4_sum_pre_double_double_double_double_double_double_double_double_struct_double_i8_int"
+                         (double double double double double double double double (& T))
+                         double))
+    (let* ([p (foreign-alloc (ftype-sizeof T))]
+           [a (make-ftype-pointer T p)])
+      (ftype-set! T (d) a 1.25)
+      (ftype-set! T (i) a 10)
+      (ftype-set! T (n) a 100)
+      (let loop ([i 1000000])
+        (cond
+         [(zero? i) (foreign-free p) #t]
+         [else
+          (let ([v (sum_pre_double_double_double_double_double_double_double_double 8.25 9.25 10.25 11.25 12.25 13.25 14.25 15.25 a)])
+            (and (= 205.25 v)
+                 (loop (sub1 i))))]))))
+  (let ()
+    (define-ftype T (struct [d double] [i integer-8] [n int]))
+    (define-ftype callback (function __collect_safe ((& T)) double))
+    (define cb_send (foreign-procedure __collect_safe
+                                       "f4_cb_send_struct_double_i8_int"
+                                       ((* callback)) double))
+    (let ([cb (make-ftype-pointer
+               callback
+               (lambda (r)
+                 (+ (ftype-ref T (d) r)
+                    (ftype-ref T (i) r)
+                    (ftype-ref T (n) r))))])
+      (let loop ([i 1000000])
+        (cond
+         [(zero? i)
+          (unlock-object
+           (foreign-callable-code-object
+            (ftype-pointer-address cb)))
+          #t]
+         [else
+          (let ([v (cb_send cb)])
+            (and (= v 112.25)
+                 (loop (sub1 i))))]))))
   )
 
 (mat collect-safe

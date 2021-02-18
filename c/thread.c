@@ -95,6 +95,7 @@ ptr S_create_thread_object(who, p_tc) const char *who; ptr p_tc; {
   TIMERTICKS(tc) = Sfalse;
   DISABLECOUNT(tc) = Sfixnum(0);
   SIGNALINTERRUPTPENDING(tc) = Sfalse;
+  SIGNALINTERRUPTQUEUE(tc) = S_allocate_scheme_signal_queue();
   KEYBOARDINTERRUPTPENDING(tc) = Sfalse;
 
   TARGETMACHINE(tc) = S_intern((const unsigned char *)MACHINE_TYPE);
@@ -103,6 +104,8 @@ ptr S_create_thread_object(who, p_tc) const char *who; ptr p_tc; {
   for (i = 0 ; i < virtual_register_count ; i += 1) {
     VIRTREG(tc, i) = FIX(0);
   }
+
+  DSTBV(tc) = SRCBV(tc) = Sfalse;
 
  /* S_thread had better not do thread-local allocation */
   thread = S_thread(tc);
@@ -120,6 +123,8 @@ ptr S_create_thread_object(who, p_tc) const char *who; ptr p_tc; {
   SOMETHINGPENDING(tc) = SYMVAL(S_G.collect_request_pending_id);
 
   GUARDIANENTRIES(tc) = Snil;
+
+  LZ4OUTBUFFER(tc) = NULL;
 
   tc_mutex_release()
 
@@ -224,7 +229,10 @@ static IBOOL destroy_thread(tc) ptr tc; {
         }
       }
 
-      free((void *)THREADTC(thread));
+      if (LZ4OUTBUFFER(tc) != NULL) free(LZ4OUTBUFFER(tc));
+      if (SIGNALINTERRUPTQUEUE(tc) != NULL) free(SIGNALINTERRUPTQUEUE(tc));
+
+      free((void *)tc);
       THREADTC(thread) = 0; /* mark it dead */
       status = 1;
       break;
@@ -361,11 +369,11 @@ void S_condition_free(c) s_thread_cond_t *c; {
 
 #ifdef FEATURE_WINDOWS
 
-static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_t *mutex, int typeno, long sec, long nsec) {
+static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_t *mutex, int typeno, I64 sec, long nsec) {
   if (typeno == time_utc) {
     struct timespec now;
     S_gettime(time_utc, &now);
-    sec -= (long)now.tv_sec;
+    sec -= now.tv_sec;
     nsec -= now.tv_nsec;
     if (nsec < 0) {
       sec -= 1;
@@ -376,7 +384,7 @@ static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_
     sec = 0;
     nsec = 0;
   }
-  if (SleepConditionVariableCS(cond, mutex, sec*1000 + nsec/1000000)) {
+  if (SleepConditionVariableCS(cond, mutex, (DWORD)(sec*1000 + (nsec+500000)/1000000))) {
     return 0;
   } else if (GetLastError() == ERROR_TIMEOUT) {
     return ETIMEDOUT;
@@ -387,12 +395,12 @@ static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_
 
 #else /* FEATURE_WINDOWS */
 
-static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_t *mutex, int typeno, long sec, long nsec) {
+static inline int s_thread_cond_timedwait(s_thread_cond_t *cond, s_thread_mutex_t *mutex, int typeno, I64 sec, long nsec) {
   struct timespec t;
   if (typeno == time_duration) {
     struct timespec now;
     S_gettime(time_utc, &now);
-    t.tv_sec = now.tv_sec + sec;
+    t.tv_sec = (time_t)(now.tv_sec + sec);
     t.tv_nsec = now.tv_nsec + nsec;
     if (t.tv_nsec >= 1000000000) {
       t.tv_sec += 1;
@@ -414,7 +422,7 @@ IBOOL S_condition_wait(c, m, t) s_thread_cond_t *c; scheme_mutex_t *m; ptr t; {
   s_thread_t self = s_thread_self();
   iptr count;
   INT typeno;
-  long sec;
+  I64 sec;
   long nsec;
   INT status;
 
@@ -427,8 +435,12 @@ IBOOL S_condition_wait(c, m, t) s_thread_cond_t *c; scheme_mutex_t *m; ptr t; {
   if (t != Sfalse) {
     /* Keep in sync with ts record in s/date.ss */
     typeno = Sinteger32_value(Srecord_ref(t,0));
-    sec = Sinteger32_value(Scar(Srecord_ref(t,1)));
+    sec = Sinteger64_value(Scar(Srecord_ref(t,1)));
     nsec = Sinteger32_value(Scdr(Srecord_ref(t,1)));
+  } else {
+    typeno = 0;
+    sec = 0;
+    nsec = 0;
   }
 
   if (c == &S_collect_cond || DISABLECOUNT(tc) == 0) {

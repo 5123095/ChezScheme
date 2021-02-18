@@ -1,4 +1,3 @@
-"cpnanopass.ss"
 ;;; cpnanopass.ss
 ;;; Copyright 1984-2017 Cisco Systems, Inc.
 ;;;
@@ -3714,61 +3713,65 @@
                        (if (null? e*)
                            e
                            (reduce #f (moi src sexpr (list e (car e*))) (cdr e*)))))))))
-        (define-who relop-length
-          (lambda (op e1 e2)
-            (define (mirror op)
-              (case op
-                [(<) '>]
-                [(<=) '>=]
-                [(>=) '<=]
-                [(>) '<]
-                [else op]))
-            (define go
-              (lambda (n e r?)
-                (define op-error
-                  (lambda (op)
-                    (sorry! who "unexpected op ~s" op)))
-                (let ([op (if r? (mirror op) op)])
-                  (let f ([n n] [e e])
-                    (if (fx= n 0)
-                        (case op
-                          [(= <=) (build-null? e)]
-                          [(<) `(seq ,e (quote #f))]
-                          [(>) (build-not (build-null? e))]
-                          [(>=) `(seq ,e (quote #t))]
-                          [else (op-error op)])
-                        (case op
-                          [(= >) (bind #t (e)
-                                   (build-and
-                                     (build-not (build-null? e))
-                                     (f (fx- n 1) (build-cdr e))))]
-                          [(<) (if (fx= n 1)
-                                   (build-null? e)
-                                   (bind #t (e)
-                                     (build-simple-or
-                                       (build-null? e)
-                                       (f (fx- n 1) (build-cdr e)))))]
-                          [(<=) (bind #t (e)
-                                  (build-simple-or
-                                    (build-null? e)
-                                    (f (fx- n 1) (build-cdr e))))]
-                          [(>=) (if (fx= n 1)
-                                    (build-not (build-null? e))
-                                    (bind #t (e)
-                                      (build-and
-                                        (build-not (build-null? e))
-                                        (f (fx- n 1) (build-cdr e)))))]
-                          [else (op-error op)]))))))
-            (define try
-              (lambda (e1 e2 r?)
-                (nanopass-case (L7 Expr) e1
-                  [(call ,info ,mdcl ,pr ,e)
-                   (guard (and (eq? (primref-name pr) 'length) (all-set? (prim-mask unsafe) (primref-flags pr))))
-                   (nanopass-case (L7 Expr) e2
-                     [(quote ,d) (and (fixnum? d) (fx<= 0 d 4) (go d e r?))]
-                     [else #f])]
-                  [else #f])))
-            (or (try e1 e2 #f) (try e2 e1 #t))))
+        (module (relop-length RELOP< RELOP<= RELOP= RELOP>= RELOP>)
+          (define RELOP< -2)
+          (define RELOP<= -1)
+          (define RELOP= 0)
+          (define RELOP>= 1)
+          (define RELOP> 2)
+          (define (mirror op) (fx- op))
+          (define go
+            (lambda (op e n)
+              (let f ([n n] [e e])
+                (if (fx= n 0)
+                    (cond
+                      [(or (eqv? op RELOP=) (eqv? op RELOP<=)) (build-null? e)]
+                      [(eqv? op RELOP<) `(seq ,e (quote #f))]
+                      [(eqv? op RELOP>) (build-not (build-null? e))]
+                      [(eqv? op RELOP>=) `(seq ,e (quote #t))]
+                      [else (sorry! 'relop-length "unexpected op ~s" op)])
+                    (cond
+                      [(or (eqv? op RELOP=) (eqv? op RELOP>))
+                       (bind #t (e)
+                         (build-and
+                           (build-not (build-null? e))
+                           (f (fx- n 1) (build-cdr e))))]
+                      [(eqv? op RELOP<)
+                       (if (fx= n 1)
+                           (build-null? e)
+                           (bind #t (e)
+                             (build-simple-or
+                               (build-null? e)
+                               (f (fx- n 1) (build-cdr e)))))]
+                      [(eqv? op RELOP<=)
+                       (bind #t (e)
+                         (build-simple-or
+                           (build-null? e)
+                           (f (fx- n 1) (build-cdr e))))]
+                      [(eqv? op RELOP>=)
+                       (if (fx= n 1)
+                           (build-not (build-null? e))
+                           (bind #t (e)
+                             (build-and
+                               (build-not (build-null? e))
+                               (f (fx- n 1) (build-cdr e)))))]
+                      [else (sorry! 'relop-length "unexpected op ~s" op)])))))
+          (define relop-length1
+            (lambda (op e n)
+              (nanopass-case (L7 Expr) e
+                [(call ,info ,mdcl ,pr ,e)
+                 (guard (and (eq? (primref-name pr) 'length) (all-set? (prim-mask unsafe) (primref-flags pr))))
+                 (go op e n)]
+                [else #f])))
+          (define relop-length2
+            (lambda (op e1 e2)
+              (nanopass-case (L7 Expr) e2
+                [(quote ,d) (and (fixnum? d) (fx<= 0 d 4) (relop-length1 op e1 d))]
+                [else #f])))
+          (define relop-length
+            (case-lambda
+              [(op e) (relop-length1 op e 0)]
+              [(op e1 e2) (or (relop-length2 op e1 e2) (relop-length2 (mirror op) e2 e1))])))
         (define make-ftype-pointer-equal?
           (lambda (e1 e2)
             (bind #f (e1 e2)
@@ -3808,7 +3811,10 @@
           [(e) e]
           [e* `(values ,(make-info-call src sexpr #f #f #f) ,e* ...)])
         (define-inline 2 eq?
-          [(e1 e2) (%inline eq? ,e1 ,e2)])
+          [(e1 e2)
+           (or (eqvop-null-fptr e1 e2)
+               (relop-length RELOP= e1 e2)
+               (%inline eq? ,e1 ,e2))])
         (define-inline 2 $keep-live
           [(e) (%seq ,(%inline keep-live ,e) ,(%constant svoid))])
         (let ()
@@ -3821,7 +3827,7 @@
                         (build-libcall #t src sexpr fx=? e1 e2)
                         (build-libcall #t src sexpr fx= e1 e2)))))
           (define (go src sexpr e1 e2 r6rs?)
-            (or (relop-length '= e1 e2)
+            (or (relop-length RELOP= e1 e2)
                 (cond
                   [(constant? (lambda (x) (eqv? x 0)) e1)
                    (bind #t (e2) (zgo src sexpr e2 e1 e2 r6rs?))]
@@ -3845,7 +3851,7 @@
               [(_ op r6rs:op length-op inline-op)
                (let ()
                  (define (go src sexpr e1 e2 r6rs?)
-                   (or (relop-length 'length-op e1 e2)
+                   (or (relop-length length-op e1 e2)
                        (bind #t (e1 e2)
                          `(if ,(build-fixnums? (list e1 e2))
                               ,(%inline inline-op ,e1 ,e2)
@@ -3862,17 +3868,17 @@
                    ; TODO: 3-operand case requires 3-operand library routine
                    #; [(e1 e2 e3) (go3 src sexpr e1 e2 e3 #t)]
                    [(e1 e2 . e*) #f]))]))
-          (fx-pred fx< fx<? < <)
-          (fx-pred fx<= fx<=? <= <=)
-          (fx-pred fx>= fx>=? >= >=)
-          (fx-pred fx> fx>? > >))
+          (fx-pred fx< fx<? RELOP< <)
+          (fx-pred fx<= fx<=? RELOP<= <=)
+          (fx-pred fx>= fx>=? RELOP>= >=)
+          (fx-pred fx> fx>? RELOP> >))
         (let () ; level 3 fx=, fx=?, etc.
           (define-syntax fx-pred
             (syntax-rules ()
               [(_ op r6rs:op length-op inline-op)
                (let ()
                  (define (go e1 e2)
-                   (or (relop-length 'length-op e1 e2)
+                   (or (relop-length length-op e1 e2)
                        (%inline inline-op ,e1 ,e2)))
                  (define reducer
                    (if (eq? 'inline-op 'eq?)
@@ -3885,11 +3891,11 @@
                  (define-inline 3 r6rs:op
                    [(e1 e2) (go e1 e2)]
                    [(e1 e2 . e*) (reducer src sexpr moi e1 e2 e*)]))]))
-          (fx-pred fx< fx<? < <)
-          (fx-pred fx<= fx<=? <= <=)
-          (fx-pred fx= fx=? = eq?)
-          (fx-pred fx>= fx>=? >= >=)
-          (fx-pred fx> fx>? > >))
+          (fx-pred fx< fx<? RELOP< <)
+          (fx-pred fx<= fx<=? RELOP<= <=)
+          (fx-pred fx= fx=? RELOP= eq?)
+          (fx-pred fx>= fx>=? RELOP>= >=)
+          (fx-pred fx> fx>? RELOP> >))
         (let () ; level 3 fxlogand, ...
           (define-syntax fxlogop
             (syntax-rules ()
@@ -3990,7 +3996,7 @@
           (fxlognotop fxlognot)
           (fxlognotop fxnot))
         (define-inline 3 $fxu<
-          [(e1 e2) (or (relop-length '< e1 e2)
+          [(e1 e2) (or (relop-length RELOP< e1 e2)
                        (%inline u< ,e1 ,e2))])
         (define-inline 3 fx+
           [() `(immediate 0)]
@@ -4434,15 +4440,15 @@
                              (build-libcall #t src sexpr fxcopy-bit e1 e2)))]
                     [else #f]))]))
         (define-inline 3 fxzero?
-          [(e) (%inline eq? ,e (immediate 0))])
+          [(e) (or (relop-length RELOP= e) (%inline eq? ,e (immediate 0)))])
         (define-inline 3 fxpositive?
-          [(e) (%inline > ,e (immediate 0))])
+          [(e) (or (relop-length RELOP> e) (%inline > ,e (immediate 0)))])
         (define-inline 3 fxnonnegative?
-          [(e) (%inline >= ,e (immediate 0))])
+          [(e) (or (relop-length RELOP>= e) (%inline >= ,e (immediate 0)))])
         (define-inline 3 fxnegative?
-          [(e) (%inline < ,e (immediate 0))])
+          [(e) (or (relop-length RELOP< e) (%inline < ,e (immediate 0)))])
         (define-inline 3 fxnonpositive?
-          [(e) (%inline <= ,e (immediate 0))])
+          [(e) (or (relop-length RELOP<= e) (%inline <= ,e (immediate 0)))])
         (define-inline 3 fxeven?
           [(e) (%inline eq?
                   ,(%inline logand ,e (immediate ,(fix 1)))
@@ -4453,32 +4459,37 @@
                   (immediate ,(fix 1)))])
 
         (define-inline 2 fxzero?
-          [(e) (bind #t (e)
-                 (build-simple-or
-                   (%inline eq? ,e (immediate 0))
-                   `(if ,(build-fixnums? (list e))
-                        ,(%constant sfalse)
-                        ,(build-libcall #t src sexpr fxzero? e))))])
+          [(e) (or (relop-length RELOP= e)
+                   (bind #t (e)
+                     (build-simple-or
+                       (%inline eq? ,e (immediate 0))
+                       `(if ,(build-fixnums? (list e))
+                            ,(%constant sfalse)
+                            ,(build-libcall #t src sexpr fxzero? e)))))])
         (define-inline 2 fxpositive?
-          [(e) (bind #t (e)
-                 `(if ,(build-fixnums? (list e))
-                      ,(%inline > ,e (immediate 0))
-                      ,(build-libcall #t src sexpr fxpositive? e)))])
+          [(e) (or (relop-length RELOP> e)
+                   (bind #t (e)
+                     `(if ,(build-fixnums? (list e))
+                          ,(%inline > ,e (immediate 0))
+                          ,(build-libcall #t src sexpr fxpositive? e))))])
         (define-inline 2 fxnonnegative?
-          [(e) (bind #t (e)
-                 `(if ,(build-fixnums? (list e))
-                      ,(%inline >= ,e (immediate 0))
-                      ,(build-libcall #t src sexpr fxnonnegative? e)))])
+          [(e) (or (relop-length RELOP>= e)
+                   (bind #t (e)
+                     `(if ,(build-fixnums? (list e))
+                          ,(%inline >= ,e (immediate 0))
+                          ,(build-libcall #t src sexpr fxnonnegative? e))))])
         (define-inline 2 fxnegative?
-          [(e) (bind #t (e)
-                 `(if ,(build-fixnums? (list e))
-                      ,(%inline < ,e (immediate 0))
-                      ,(build-libcall #t src sexpr fxnegative? e)))])
+          [(e) (or (relop-length RELOP< e)
+                   (bind #t (e)
+                     `(if ,(build-fixnums? (list e))
+                          ,(%inline < ,e (immediate 0))
+                          ,(build-libcall #t src sexpr fxnegative? e))))])
         (define-inline 2 fxnonpositive?
-          [(e) (bind #t (e)
-                 `(if ,(build-fixnums? (list e))
-                      ,(%inline <= ,e (immediate 0))
-                      ,(build-libcall #t src sexpr fxnonpositive? e)))])
+          [(e) (or (relop-length RELOP<= e)
+                   (bind #t (e)
+                     `(if ,(build-fixnums? (list e))
+                          ,(%inline <= ,e (immediate 0))
+                          ,(build-libcall #t src sexpr fxnonpositive? e))))])
         (define-inline 2 fxeven?
           [(e) (bind #t (e)
                  `(if ,(build-fixnums? (list e))
@@ -5053,8 +5064,17 @@
           (def-len fxvector-length mask-fxvector type-fxvector fxvector-type-disp fxvector-length-offset)
           (def-len string-length mask-string type-string string-type-disp string-length-offset)
           (def-len bytevector-length mask-bytevector type-bytevector bytevector-type-disp bytevector-length-offset))
-        ; TODO: consider adding integer?, integer-valued?, rational?, rational-valued?,
+        ; TODO: consider adding integer-valued?, rational?, rational-valued?,
         ; real?, and real-valued?
+        (define-inline 2 integer?
+          [(e) (bind #t (e)
+                 (build-simple-or
+                   (%type-check mask-fixnum type-fixnum ,e)
+                   (build-simple-or
+                     (%typed-object-check mask-bignum type-bignum ,e)
+                     (build-and
+                       (%type-check mask-flonum type-flonum ,e)
+                       `(call ,(make-info-call src sexpr #f #f #f) #f ,(lookup-primref 3 'flinteger?) ,e)))))])
         (let ()
           (define build-number?
             (lambda (e)
@@ -5396,6 +5416,18 @@
                  (set! ,(%mref ,t ,(constant guardian-entry-next-disp)) ,(%tc-ref guardian-entries))
                  (set! ,(%tc-ref guardian-entries) ,t))))])
 
+        (define-inline 2 guardian?
+          [(e)
+           (bind #t (e)
+             (build-and
+               (%type-check mask-closure type-closure ,e)
+               (%type-check mask-guardian-code type-guardian-code
+                 ,(%mref
+                    ,(%inline -
+                      ,(%mref ,e ,(constant closure-code-disp))
+                      ,(%constant code-data-disp))
+                    ,(constant code-type-disp)))))])
+
         (define-inline 2 virtual-register-count
           [() `(quote ,(constant virtual-register-count))])
         (let ()
@@ -5719,6 +5751,7 @@
           (define eqvok? (e*ok? eqvok-help?))
           (define-inline 2 eqv?
             [(e1 e2) (or (eqvop-null-fptr e1 e2)
+                         (relop-length RELOP= e1 e2)
                          (if (or (eqok? e1) (eqok? e2))
                              (build-eq? e1 e2)
                              (build-eqv? src sexpr e1 e2)))])
@@ -5747,6 +5780,7 @@
                   [else #f])))
             (define-inline 2 equal?
               [(e1 e2) (or (eqvop-null-fptr e1 e2)
+                           (relop-length RELOP= e1 e2)
                            (xform-equal? src sexpr e1 e2)
                            (xform-equal? src sexpr e2 e1))]))
           (let ()
@@ -6211,7 +6245,7 @@
                    ,(build-libcall #t src sexpr = e1 e2))))
           (define (go src sexpr e1 e2)
             (or (eqvop-null-fptr e1 e2)
-                (relop-length '= e1 e2)
+                (relop-length RELOP= e1 e2)
                 (cond
                   [(constant? (lambda (x) (eqv? x 0)) e1)
                    (bind #t (e2) (zgo src sexpr e2 e1 e2))]
@@ -6234,7 +6268,7 @@
                (let ()
                  (define builder
                    (lambda (e1 e2 libcall)
-                     (or (relop-length 'relop e1 e2)
+                     (or (relop-length relop e1 e2)
                          (bind #t (e1 e2)
                            `(if ,(build-fixnums? (list e1 e2))
                                 ,(%inline op ,e1 ,e2)
@@ -6251,33 +6285,38 @@
                       (lambda (e1 e2) (build-libcall #t src sexpr name e1 e2)))]
                    ; TODO: handle 3-operand case w/3-operand library routine
                    [(e1 e2 . e*) #f]))]))
-          (define-relop-inline < r6rs:< < <)
-          (define-relop-inline <= r6rs:<= <= <=)
-          (define-relop-inline >= r6rs:>= >= >=)
-          (define-relop-inline > r6rs:> > >))
+          (define-relop-inline < r6rs:< RELOP< <)
+          (define-relop-inline <= r6rs:<= RELOP<= <=)
+          (define-relop-inline >= r6rs:>= RELOP>= >=)
+          (define-relop-inline > r6rs:> RELOP> >))
         (define-inline 3 positive?  ; 3 so opt-level 2 errors come from positive?
           [(e) (handle-prim src sexpr 3 '> (list e `(quote 0)))])
-        (define-inline 3 nonnegative? ; 3 so opt-level 2 errors come from positive?
+        (define-inline 3 nonnegative? ; 3 so opt-level 2 errors come from nonnegative?
           [(e) (handle-prim src sexpr 3 '>= (list e `(quote 0)))])
-        (define-inline 3 negative?  ; 3 so opt-level 2 errors come from positive?
+        (define-inline 3 negative?  ; 3 so opt-level 2 errors come from negative?
           [(e) (handle-prim src sexpr 3 '< (list e `(quote 0)))])
-        (define-inline 3 nonpositive?  ; 3 so opt-level 2 errors come from positive?
+        (define-inline 3 nonpositive?  ; 3 so opt-level 2 errors come from nonpositive?
           [(e) (handle-prim src sexpr 3 '<= (list e `(quote 0)))])
         (define-inline 2 zero?
           [(e)
-           (nanopass-case (L7 Expr) e
-             [(call ,info ,mdcl ,pr ,e)
-              (guard
-                (eq? (primref-name pr) 'ftype-pointer-address)
-                (all-set? (prim-mask unsafe) (primref-flags pr)))
-              (make-ftype-pointer-null? e)]
-             [else
-              (bind #t (e)
-                (build-simple-or
-                  (%inline eq? ,e (immediate ,(fix 0)))
-                  `(if ,(%type-check mask-fixnum type-fixnum ,e)
-                       ,(%constant sfalse)
-                       ,(build-libcall #t src sexpr zero? e))))])])
+           (or (relop-length RELOP= e)
+               (nanopass-case (L7 Expr) e
+                 [(call ,info ,mdcl ,pr ,e)
+                  (guard
+                    (eq? (primref-name pr) 'ftype-pointer-address)
+                    (all-set? (prim-mask unsafe) (primref-flags pr)))
+                  (make-ftype-pointer-null? e)]
+                 [else
+                   (bind #t (e)
+                     (build-simple-or
+                       (%inline eq? ,e (immediate ,(fix 0)))
+                       `(if ,(%type-check mask-fixnum type-fixnum ,e)
+                            ,(%constant sfalse)
+                            ,(build-libcall #t src sexpr zero? e))))]))])
+        (define-inline 2 positive? [(e) (relop-length RELOP> e)])
+        (define-inline 2 nonnegative? [(e) (relop-length RELOP>= e)])
+        (define-inline 2 negative? [(e) (relop-length RELOP< e)])
+        (define-inline 2 nonpositive? [(e) (relop-length RELOP<= e)])
         (let ()
           (define-syntax  define-logorop-inline
             (syntax-rules ()
@@ -7663,9 +7702,9 @@
                         (build-dirty-store e-p ibuffer-disp e-b))
                    ,(bind #t ([e-length (if (eq? port-type 'textual)
                                             (translate
-                                              (%inline logxor
+                                              (%inline logand
                                                  ,(%mref ,e-b ,(constant string-type-disp))
-                                                 ,(%constant type-string))
+                                                 (immediate ,(fx- (expt 2 (constant string-length-offset)))))
                                               (constant string-length-offset)
                                               (constant string-char-offset))
                                             (%inline srl
@@ -9720,7 +9759,7 @@
                  (let ([tmp (make-tmp 't)])
                    `(seq
                       (set! ,tmp ,rhs)
-                      (mvcall ,(make-info-call (info-call-src info) (info-call-sexpr info) #f #f #f) #f ,consumer ,tmp ())))]
+                      ,(k `(mvcall ,(make-info-call (info-call-src info) (info-call-sexpr info) #f #f #f) #f ,consumer ,tmp ()))))]
                 [else ; set! & mvset
                  `(seq ,e ,(k `(mvcall ,(make-info-call (info-call-src info) (info-call-sexpr info) #f #f #f) #f ,consumer ,(%constant svoid) ())))])))))
       (CaseLambdaClause : CaseLambdaClause (ir) -> CaseLambdaClause ()
@@ -10087,8 +10126,10 @@
               (if (null? x**)
                   (%seq
                     (pariah)
-                    ; goto domvleterr before decrementing sfp, so callers frame
-                    ; is still on the stack, to go along with value in %ret / sfp[0]
+                    ;; mverror point ensures that the call's return address
+                    ;; is in sfp[0], so the caller's frame is still
+                    ;; on the stack for error reporting and debugging
+                    (mverror-point)
                     (goto ,Ldomvleterr))
                   (let ([x* (car x**)] [interface (car interface*)] [l (car l*)])
                     (let ([ebody `(mventry-point (,x* ...) ,l)])
@@ -10125,6 +10166,7 @@
       (definitions
         (import (only asm-module asm-foreign-call asm-foreign-callable asm-enter))
         (define newframe-info-for-mventry-point)
+        (define label-for-mverror-point)
         (define Lcall-error (make-Lcall-error))
         (define dcl*)
         (define local*)
@@ -10359,7 +10401,7 @@
                                                                (build-return-point rpl this-mrvl cnfv*
                                                                  (build-consumer-call tc cnfv rpl)))
                                                             ,(f tc* cnfv* rpl* this-mrvl)))))))))))
-                               ,(build-postlude newframe-info))))))))))))
+                               ,(build-postlude newframe-info rpl))))))))))))
           ; NB: combine
           (define build-nontail-call-for-tail-call-with-consumers
             (lambda (info mdcl t0 t1* tc* nfv** mrvl prepare-for-consumer? build-postlude)
@@ -10470,7 +10512,7 @@
                             (let ([tc* (list-head tc* (fx- (length tc*) 1))])
                               `(seq
                                  ,(build-nontail-call info mdcl t0 t1* tc* '() mrvl #t
-                                    (lambda (newframe-info)
+                                    (lambda (newframe-info rpl)
                                       (%seq
                                         (remove-frame ,newframe-info)
                                         (restore-local-saves ,newframe-info)
@@ -10778,7 +10820,10 @@
                                    (if (null? frame-x*)
                                        (begin (set! max-fv (fxmax max-fv i)) '())
                                        (let ([i (fx+ i 1)])
-                                         (cons (get-fv i) (f (cdr frame-x*) i)))))])
+                                         (cons (get-fv i) (f (cdr frame-x*) i)))))]
+                            [cp-save (meta-cond
+                                      [(real-register? '%cp) (make-tmp 'cp)]
+                                      [else #f])])
                         ; add 2 for the old RA and cchain
                         (set! max-fv (fx+ max-fv 2))
                         (let-values ([(c-init c-args c-result c-return) (asm-foreign-callable info)])
@@ -10788,17 +10833,20 @@
                           ; c-return restores callee-save registers and returns to C
                           (%seq
                             ,(c-init)
-                            ; although we don't actually need %cp in a register, we need
-                            ; to make sure that `(%tc-ref cp)` doesn't change before S_call_help
-                            ; is called, and claiming that %cp is live is the easiest way
                             ,(restore-scheme-state
-                               (in %cp)
+                               (in %cp) ; to save and then restore just before S_call_help
                                (out %ac0 %ac1 %xp %yp %ts %td scheme-args extra-regs))
                             ; need overflow check since we're effectively retroactively turning
                             ; what was a foreign call into a Scheme non-tail call
                             (fcallable-overflow-check)
                             ; leave room for the RA & c-chain
                             (set! ,%sfp ,(%inline + ,%sfp (immediate ,(fx* (constant ptr-bytes) 2))))
+                            ; stash %cp and restore later to make sure it's intact by the time
+                            ; that we get to S_call_help
+                            ,(meta-cond
+                              [(real-register? '%cp) `(set! ,cp-save ,%cp)]
+                              [else `(nop)])
+                            ; convert arguments
                             ,(fold-left (lambda (e x arg-type c-arg) `(seq ,(C->Scheme arg-type c-arg x) ,e))
                                (set-locs fv* frame-x*
                                  (set-locs (map (lambda (reg) (in-context Lvalue (%mref ,%tc ,(reg-tc-disp reg)))) reg*) reg-x*
@@ -10808,6 +10856,9 @@
                             ; needs to be a quote, not an immediate
                             (set! ,(ref-reg %ac1) (literal ,(make-info-literal #f 'object 0 0)))
                             (set! ,(ref-reg %ts) (label-ref ,self-label 0)) ; for locking
+                            ,(meta-cond
+                              [(real-register? '%cp) `(set! ,%cp ,cp-save)]
+                              [else `(nop)])
                             ,(save-scheme-state
                                (in %ac0 %ac1 %ts %cp)
                                (out %xp %yp %td scheme-args extra-regs))
@@ -11354,10 +11405,12 @@
                     (if (uvar-referenced? x)
                         `(seq (set! ,x ,(uvar-location x)) ,(f (cdr x*)))
                         (f (cdr x*)))))))]
+        [(mverror-point)
+         `(set! ,%ref-ret (label-ref ,label-for-mverror-point ,(constant size-rp-header)))]
         [(mvcall ,info ,mdcl ,t0? ,t1* ... (,t* ...))
          (let ([mrvl (make-local-label 'mrvl)])
            (build-nontail-call info mdcl t0? t1* t* '() mrvl #f
-             (lambda (newframe-info)
+             (lambda (newframe-info rpl)
                (%seq (label ,mrvl) (remove-frame ,newframe-info) (restore-local-saves ,newframe-info)))))]
         [(mvset ,info (,mdcl ,t0? ,t1* ...) (,t* ...) ((,x** ...) ...) ,ebody)
          (let* ([frame-x** (map (lambda (x*) (set-formal-registers! x*)) x**)]
@@ -11369,12 +11422,13 @@
                          frame-x**)])
            (let ([mrvl (make-local-label 'mrvl)])
              (build-nontail-call info mdcl t0? t1* t* nfv** mrvl #t
-               (lambda (newframe-info)
-                 (fluid-let ([newframe-info-for-mventry-point newframe-info])
+               (lambda (newframe-info rpl)
+                 (fluid-let ([newframe-info-for-mventry-point newframe-info]
+                             [label-for-mverror-point rpl])
                    (Effect ebody))))))]
         [(set! ,[lvalue] (mvcall ,info ,mdcl ,t0? ,t1* ... (,t* ...)))
          (build-nontail-call info mdcl t0? t1* t* '() #f #f
-           (lambda (newframe-info)
+           (lambda (newframe-info rpl)
              (let ([retval (make-tmp 'retval)])
                (%seq
                  (remove-frame ,newframe-info)
@@ -16063,6 +16117,6 @@
   (set! $track-dynamic-closure-counts track-dynamic-closure-counts)
 
   (set! $track-static-closure-counts track-static-closure-counts)
-)
 
-(define $optimize-closures (make-parameter #t (lambda (x) (and x #t))))
+  (set! $optimize-closures (make-parameter #t (lambda (x) (and x #t))))
+)
